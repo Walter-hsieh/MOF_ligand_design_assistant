@@ -1,4 +1,4 @@
-# AI Chemical Discovery Assistant
+# MOF_ligand_design_assistant
 
 A desktop application leveraging Retrieval-Augmented Generation (RAG) and Large Language Models to accelerate chemical discovery by analyzing local research data.
 
