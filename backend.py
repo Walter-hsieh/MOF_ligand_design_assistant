@@ -1,4 +1,12 @@
+# ==============================================================================
+# CHROMA DB / SQLITE PATCH
+# This patch must be at the very top of the file, before any other imports
+# It forces the use of the pysqlite3-binary library to prevent C-level crashes
+# ==============================================================================
+
 import os
+import re
+import io
 import json
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader, CSVLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -8,6 +16,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from langchain_core.documents import Document
+from rdkit import Chem
+from rdkit.Chem import Draw
+from PIL import Image
 
 # --- GLOBAL VARIABLES ---
 vector_store = None
@@ -94,8 +105,7 @@ def generate_ligands_real(prompt_text, vector_store_to_use):
         return {"error": "Vector store not initialized. Please index data first."}
 
     retriever = vector_store_to_use.as_retriever(search_kwargs={"k": 5})
-    # *** CHANGED MODEL NAME AND REMOVED DEPRECATED PARAMETER HERE ***
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-05-20", temperature=0.5)
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.5)
     
     template = """
     You are a world-class medicinal chemist. Based on the following context from research papers and data, answer the user's question.
@@ -137,7 +147,6 @@ def generate_synthesis_real(prompt_text, ligand_list, vector_store_to_use):
         return "Vector store not initialized. Please index data first."
 
     retriever = vector_store_to_use.as_retriever(search_kwargs={"k": 10})
-    # *** CHANGED MODEL NAME AND REMOVED DEPRECATED PARAMETER HERE ***
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.2)
     
     template = """
@@ -170,3 +179,61 @@ def generate_synthesis_real(prompt_text, ligand_list, vector_store_to_use):
     except Exception as e:
         print(f"Error during AI generation: {e}")
         return f"An error occurred: {e}"
+
+
+def sanitize_filename(name):
+    """Replaces spaces with underscores and removes invalid filename characters."""
+    name = name.strip().replace(' ', '_')
+    return re.sub(r'[\\/*?:"<>|]', '', name)
+
+def process_smiles_to_images(data_input: str) -> list:
+    """
+    Parses a multiline string of chemical data, generates images from SMILES,
+    and returns a list of dictionaries containing image objects or errors.
+    """
+    print("Processing SMILES to images...")
+    lines = data_input.strip().split('\n')
+    results = []
+
+    for line in lines:
+        if not line.strip():
+            continue
+
+        parts = line.strip().rsplit(',', 1)
+        if len(parts) != 2:
+            print(f"--> Skipping malformed line: {line}")
+            continue
+
+        name, smiles = parts[0].strip(), parts[1].strip()
+        filename = f"{sanitize_filename(name)}.png"
+        
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                raise ValueError("Invalid SMILES string resulted in null molecule.")
+            
+            img_pil = Draw.MolToImage(mol, size=(300, 300))
+
+            bio = io.BytesIO()
+            img_pil.save(bio, format='PNG')
+            
+            results.append({
+                'name': name,
+                'filename': filename,
+                'pil_image': img_pil,
+                'image_bytes': bio.getvalue(),
+                'error': None
+            })
+
+        except Exception as e:
+            print(f"--> Failed to process '{name}': Invalid SMILES string '{smiles}'")
+            results.append({
+                'name': name,
+                'filename': filename,
+                'pil_image': None,
+                'image_bytes': None,
+                'error': f"Invalid SMILES: {smiles}"
+            })
+    
+    print(f"SMILES processing complete. {len(results)} entries handled.\n")
+    return results

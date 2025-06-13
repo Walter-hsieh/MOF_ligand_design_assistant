@@ -1,12 +1,12 @@
 customtkinter
 langchain
 langchain-google-genai
-langchain_community
-chromadb
+chromadb==0.5.3
 pandas
 openpyxl
 python-docx
 pypdf
 unstructured[xlsx]
-python-magic-bin
-lxml
+rdkit-pypi
+numpy<2.0
+onnxruntime==1.16.3
