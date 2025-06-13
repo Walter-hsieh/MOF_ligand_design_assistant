@@ -4,7 +4,7 @@ import backend  # Import our backend logic
 import threading
 import zipfile
 import io
-import traceback # Import the traceback module
+import traceback
 from PIL import Image
 
 class SmilesToImageWindow(ctk.CTkToplevel):
@@ -149,7 +149,6 @@ class App(ctk.CTk):
         self.indexing_status_label = ctk.CTkLabel(self.left_frame, text="")
         self.indexing_status_label.pack(pady=5, padx=10)
 
-        # --- ADDED UTILITY BUTTON ---
         ctk.CTkLabel(self.left_frame, text="Utilities", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(30, 10), padx=20)
         self.smiles_button = ctk.CTkButton(self.left_frame, text="SMILES to Image", command=self.open_smiles_utility)
         self.smiles_button.pack(pady=10, padx=20, fill="x")
@@ -197,13 +196,30 @@ class App(ctk.CTk):
         self.recipe_output.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
 
     def open_smiles_utility(self):
-        """Opens the SMILES to Image utility window."""
         if self.smiles_window is None or not self.smiles_window.winfo_exists():
             self.smiles_window = SmilesToImageWindow(self)
             self.smiles_window.focus()
         else:
             self.smiles_window.focus()
-        
+    
+    # ==============================================================================
+    # NEW FUNCTION TO COPY TEXT TO CLIPBOARD
+    # ==============================================================================
+    def copy_to_clipboard(self, text_to_copy: str, button: ctk.CTkButton):
+        """Copies the given text to the system clipboard and provides user feedback."""
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text_to_copy)
+            print(f"Copied to clipboard: {text_to_copy}")
+            
+            # Provide visual feedback on the button
+            original_text = button.cget("text")
+            button.configure(text="Copied!", fg_color="green")
+            self.after(1500, lambda: button.configure(text=original_text, fg_color=("#3B8ED0", "#1F6AA5")))
+        except Exception as e:
+            print(f"Error copying to clipboard: {e}")
+            messagebox.showerror("Clipboard Error", "Could not copy text to clipboard.")
+
     def select_folder(self):
         path = filedialog.askdirectory()
         if path:
@@ -217,34 +233,22 @@ class App(ctk.CTk):
         self.index_button.configure(state="disabled", text="Indexing...")
         threading.Thread(target=self.index_data, daemon=True).start()
 
-    # ==============================================================================
-    # THIS FUNCTION IS NOW MODIFIED WITH ERROR HANDLING
-    # ==============================================================================
     def index_data(self):
-        """Target function for the indexing thread with full error handling."""
         try:
-            print("--- [DEBUG] Starting backend indexing process. ---")
             self.vector_store = backend.load_and_index_data(self.data_folder_path)
-            print("--- [DEBUG] Backend indexing process finished. ---")
-            
             if self.vector_store:
                 self.indexing_status_label.configure(text="Indexing Complete!", text_color="lightgreen")
                 self.generate_button.configure(state="normal")
                 self.synthesis_button.configure(state="normal")
             else:
-                # This case handles if the backend function returns None without an error
                 self.indexing_status_label.configure(text="Indexing failed. Check logs.", text_color="orange")
         except Exception as e:
-            # This will catch any unexpected crash during the process
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             print(f"AN UNEXPECTED ERROR OCCURRED IN THE INDEXING THREAD:")
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            # Print the full error traceback to the console
             traceback.print_exc()
             self.indexing_status_label.configure(text="CRITICAL ERROR! Check terminal.", text_color="red")
         finally:
-            # This block will run no matter what, ensuring the button is always re-enabled
-            print("--- [DEBUG] Indexing thread concluded. ---")
             self.index_button.configure(state="normal", text="Re-Index Data")
 
     def run_generation_thread(self):
@@ -252,7 +256,6 @@ class App(ctk.CTk):
         threading.Thread(target=self.generate_ligands, daemon=True).start()
 
     def generate_ligands(self):
-        # This function could also benefit from a try/except block, but we'll focus on indexing first.
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         prompt = self.prompt_input.get("1.0", "end-1c")
@@ -286,23 +289,45 @@ class App(ctk.CTk):
 
     def create_ligand_card(self, parent, candidate_data):
         card = ctk.CTkFrame(parent, border_width=1, border_color="gray30")
+        
         name_label = ctk.CTkLabel(card, text=candidate_data.get("name", "N/A"), font=ctk.CTkFont(weight="bold"), wraplength=300)
         name_label.pack(pady=(5,2), padx=10, anchor="w")
+        
         smiles_label = ctk.CTkLabel(card, text=f'SMILES: {candidate_data.get("smiles", "N/A")}', font=ctk.CTkFont(size=10), wraplength=400)
         smiles_label.pack(pady=(0,5), padx=10, anchor="w")
+        
         img_placeholder = ctk.CTkFrame(card, height=100, fg_color="gray20")
         img_placeholder.pack(pady=5, padx=10, fill="x")
         img_label = ctk.CTkLabel(img_placeholder, text="Structure Visualization")
         img_label.pack(expand=True)
+        
+        # --- BUTTON FRAME ---
+        # This section is modified to include the new "Copy" button
         btn_frame = ctk.CTkFrame(card, fg_color="transparent")
         btn_frame.pack(pady=5, padx=10, fill="x")
-        btn_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        approve_btn = ctk.CTkButton(btn_frame, text="✅ Approve", fg_color="green", hover_color="darkgreen", command=lambda c=card, d=candidate_data: self.approve_ligand(c, d))
-        approve_btn.grid(row=0, column=0, padx=5)
-        reject_btn = ctk.CTkButton(btn_frame, text="❌ Reject", fg_color="red", hover_color="darkred", command=lambda c=card: c.destroy())
-        reject_btn.grid(row=0, column=1, padx=5)
-        feedback_btn = ctk.CTkButton(btn_frame, text="💬 Feedback", command=lambda name=candidate_data.get("name"): self.get_feedback(name))
-        feedback_btn.grid(row=0, column=2, padx=5)
+        btn_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        
+        approve_btn = ctk.CTkButton(btn_frame, text="✅ Approve", fg_color="green", hover_color="darkgreen",
+                                    command=lambda c=card, d=candidate_data: self.approve_ligand(c, d))
+        approve_btn.grid(row=0, column=0, padx=2)
+        
+        reject_btn = ctk.CTkButton(btn_frame, text="❌ Reject", fg_color="red", hover_color="darkred",
+                                   command=lambda c=card: c.destroy())
+        reject_btn.grid(row=0, column=1, padx=2)
+
+        # Create the text string for the copy button
+        copy_text = f"{candidate_data.get('name', 'N/A')},{candidate_data.get('smiles', 'N/A')}"
+        copy_btn = ctk.CTkButton(btn_frame, text="📋 Copy",
+                                 # The command now passes both the text and the button itself
+                                 command=lambda text=copy_text, btn=None: self.copy_to_clipboard(text, btn))
+        # We need to assign the button to the lambda's 'btn' argument after creation
+        copy_btn.configure(command=lambda text=copy_text, btn=copy_btn: self.copy_to_clipboard(text, btn))
+        copy_btn.grid(row=0, column=2, padx=2)
+
+        feedback_btn = ctk.CTkButton(btn_frame, text="💬 Feedback", 
+                                     command=lambda name=candidate_data.get("name"): self.get_feedback(name))
+        feedback_btn.grid(row=0, column=3, padx=2)
+        
         return card
         
     def approve_ligand(self, card_widget, ligand_data):
