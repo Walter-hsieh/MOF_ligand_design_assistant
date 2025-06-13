@@ -1,0 +1,12 @@
+customtkinter
+langchain
+langchain-google-genai
+langchain_community
+chromadb
+pandas
+openpyxl
+python-docx
+pypdf
+unstructured[xlsx]
+python-magic-bin
+lxml
