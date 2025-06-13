@@ -134,3 +134,13 @@ ai_chemical_app/
 ├── requirements.txt        # List of Python dependencies
 └── README.md               # This file
 ```
+
+## Example Prompt
+
+Generate Candidates: Modify the ligand of MOF mentioned in the research paper attached to enhance its CO2 capacity for Direct Air Capture, but do not change the crystal structure a lot. Based on this constrains, please list 5 candidate ligands that have similar chemical structure with chemical name and its SMILES. Before you give any suggestion, please check and take the latest experiment data in consideration. Please tell me your hypothesis.
+
+Generate Synthesis Plan: Here is a list of ligands that have the potential to create a high CO2 capacity MOF for DAC. 
+Take the research paper’s experimental information as the reference, please provide a detailed synthesis condition and amount of chemicals used for the new MOF with each ligand. Mix the new ligand and original ligand is allowed, but the ratio of the two ligands should provide. Please provide logic behind your answer.
+
+
+
