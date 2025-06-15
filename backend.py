@@ -3,6 +3,9 @@ import re
 import io
 import json
 from operator import itemgetter
+import traceback
+
+# LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader, CSVLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
@@ -11,25 +14,32 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
-from langchain_core.pydantic_v1 import BaseModel, Field
+from pydantic.v1 import BaseModel, Field
+
+# Agent Imports
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_tavily import TavilySearch
+from langchain.tools.retriever import create_retriever_tool
+from langchain_core.prompts import PromptTemplate
+
+# Chemistry Imports
 from rdkit import Chem
 from rdkit.Chem import Draw
 from PIL import Image
-import traceback
 
 # ==============================================================================
 # DEFAULT MODEL CONFIGURATION
 # ==============================================================================
 MODEL_NAME = "gemini-1.5-flash-latest"
 
-
-# GLOBAL VARIABLES AND FILE LOADERS...
+# GLOBAL VARIABLES
 vector_store = None
+agent_executor = None
+
+# FILE LOADERS...
 FILE_LOADERS = {".pdf": PyPDFLoader, ".docx": Docx2txtLoader, ".txt": TextLoader, ".csv": CSVLoader, ".xlsx": UnstructuredExcelLoader, ".xls": UnstructuredExcelLoader}
 
-# ==============================================================================
-# PYDANTIC SCHEMAS FOR STRUCTURED OUTPUT
-# ==============================================================================
+# PYDANTIC SCHEMAS...
 class Candidate(BaseModel):
     name: str = Field(description="The chemical name of the molecule")
     smiles: str = Field(description="The SMILES string of the molecule")
@@ -43,8 +53,8 @@ class Explanation(BaseModel):
     explanation_text: str = Field(description="A detailed scientific explanation for why the molecule was suggested, based on the provided context.")
 
 
-# The functions from load_documents_from_directory to format_docs remain unchanged...
 def load_documents_from_directory(directory_path: str) -> list[Document]:
+    # ... (this function is unchanged)
     all_docs = []
     for root, _, files in os.walk(directory_path):
         for file_name in files:
@@ -63,7 +73,66 @@ def load_documents_from_directory(directory_path: str) -> list[Document]:
                 print(f"Skipping unsupported file type: {file_path}")
     return all_docs
 
+def initialize_agent(vector_store_to_use):
+    """
+    Initializes the AI Agent with its tools and a more robust strategy.
+    """
+    global agent_executor
+    print("Initializing AI Agent with improved strategy...")
+    
+    # 1. Create the tools
+    retriever = vector_store_to_use.as_retriever(search_kwargs={"k": 7})
+    retriever_tool = create_retriever_tool(
+        retriever,
+        "local_document_search",
+        "Searches and returns relevant information from the user's private research papers and experimental data files. Use this as your primary source of information.",
+    )
+    search_tool = TavilySearch(max_results=5)
+    tools = [retriever_tool, search_tool]
+
+    # 2. Create the Agent Prompt with the new, stricter final answer format
+    prompt = PromptTemplate.from_template(
+        """
+        You are a world-class chemistry research assistant. Your goal is to answer the user's question by providing a list of chemical ligands.
+
+        You have access to the following tools:
+        {tools}
+
+        **Here is your strategy:**
+        1.  First, you **MUST** use the `local_document_search` tool to understand the user's private data, identify the key molecules, and find their properties.
+        2.  If the local data is insufficient or lacks detail (like specific SMILES strings), **DO NOT give up**.
+        3.  Instead, take the key molecule names or concepts you found and use the `tavily_search_results` tool to find the missing information online, especially the SMILES strings.
+        4.  Once you have gathered enough information from both local documents and the web search, formulate your final answer.
+
+        Use the following format for your thought process:
+
+        Question: the input question you must answer
+        Thought: your reasoning about what to do next based on your strategy.
+        Action: the action to take, should be one of [{tool_names}]
+        Action Input: the input to the action
+        Observation: the result of the action
+        ... (this Thought/Action/Action Input/Observation can repeat N times)
+        Thought: I now have enough information and have found the SMILES strings for all my proposed candidates. I can construct the final answer.
+        Final Answer: [Your final, comprehensive textual answer. It MUST be a list of the 5 candidate ligands. Each item in the list MUST include the chemical name AND its correct SMILES string, formatted clearly. For example: "1. 4-Nitro-1H-1,2,3-triazole, O=[N+]([O-])c1cn[nH]n1"]
+        
+        Begin!
+
+        Question: {input}
+        Thought: {agent_scratchpad}
+        """
+    )
+    
+    # 3. Create the Agent itself
+    llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0.7)
+    agent = create_react_agent(llm, tools, prompt)
+
+    # 4. Create the Agent Executor
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
+    print("AI Agent initialized successfully.")
+
+
 def load_and_index_data(folder_path):
+    # ... (this function is mostly unchanged)
     global vector_store
     print(f"Starting document loading from {folder_path}...")
     documents = load_documents_from_directory(folder_path)
@@ -77,50 +146,40 @@ def load_and_index_data(folder_path):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     print("Creating vector store... (This may take a moment)")
     vector_store = Chroma.from_documents(docs, embeddings, persist_directory="./chroma_db")
-    print("Indexing complete!")
+    initialize_agent(vector_store)
+    print("Indexing and Agent Initialization complete!")
     return vector_store
+
 
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 def generate_ligands_real(prompt_text, vector_store_to_use):
-    if not vector_store_to_use:
-        return [{"name": "Error", "smiles": "Vector store not initialized."}]
-
-    retriever = vector_store_to_use.as_retriever(search_kwargs={"k": 5})
-    llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0.7)
-    
-    structured_llm = llm.with_structured_output(CandidateList)
-    
-    template = """
-    You are a helpful chemistry expert. Based on the provided context, answer the user's question.
-    Your task is to provide a list of exactly five DIFFERENT and VARIED promising candidate ligands that fit the user's request.
-    Each suggestion in the list must be unique. Do not suggest the same molecule multiple times.
-    Do not invent molecules that are not supported by the context.
-
-    CONTEXT:
-    {context}
-    
-    QUESTION:
-    {question}
-    """
-    prompt = ChatPromptTemplate.from_template(template)
-    
-    rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | structured_llm
-    )
-    
+    # ... (this function is unchanged)
+    global agent_executor
+    if not agent_executor:
+        if not vector_store_to_use: return [{"name": "Error", "smiles": "Vector store not initialized."}]
+        initialize_agent(vector_store_to_use)
     try:
-        response_pydantic = rag_chain.invoke(prompt_text)
+        print("\n--- Invoking Agent ---")
+        agent_response = agent_executor.invoke({"input": prompt_text})
+        agent_output_text = agent_response['output']
+        print(f"\n--- Agent Final Answer (Text): ---\n{agent_output_text}")
+        print("\n--- Invoking Parser for Formatting ---")
+        parser_llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0).with_structured_output(CandidateList)
+        parser_prompt = ChatPromptTemplate.from_template(
+            "Parse the following text to extract a list of exactly five chemical candidates, including their name and SMILES string.\n\nText:\n{text_to_parse}"
+        )
+        parser_chain = parser_prompt | parser_llm
+        response_pydantic = parser_chain.invoke({"text_to_parse": agent_output_text})
         return [c.dict() for c in response_pydantic.candidates]
-        
     except Exception as e:
-        print(f"Error during AI generation: {e}")
-        return [{"name": "Error processing request", "smiles": str(e)}]
+        print(f"Error during AI agent execution: {e}")
+        traceback.print_exc()
+        return [{"name": "Error during agent execution", "smiles": str(e)}]
 
 
+# --- The other functions below remain unchanged ---
 def generate_synthesis_real(prompt_text, ligand_list, vector_store_to_use):
     if not vector_store_to_use:
         return "Vector store not initialized. Please index data first."
@@ -160,9 +219,8 @@ def sanitize_filename(name):
     return re.sub(r'[\\/*?:"<>|]', '', name)
 
 def process_smiles_to_images(data_input: str) -> list:
-    print("Processing SMILES to images...")
-    lines = data_input.strip().split('\n')
     results = []
+    lines = data_input.strip().split('\n')
     for line in lines:
         if not line.strip(): continue
         parts = line.strip().rsplit(',', 1)
@@ -178,12 +236,8 @@ def process_smiles_to_images(data_input: str) -> list:
             results.append({'name': name, 'filename': filename, 'pil_image': img_pil, 'image_bytes': bio.getvalue(), 'error': None})
         except Exception as e:
             results.append({'name': name, 'filename': filename, 'pil_image': None, 'image_bytes': None, 'error': f"Invalid SMILES: {smiles}"})
-    print(f"SMILES processing complete. {len(results)} entries handled.\n")
     return results
 
-# ==============================================================================
-# MODIFIED EXPLANATION FUNCTION
-# ==============================================================================
 def get_explanation_for_ligand(original_prompt: str, ligand_name: str, ligand_smiles: str, vector_store_to_use):
     """
     Generates a detailed explanation for why a specific ligand was suggested,
