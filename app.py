@@ -6,6 +6,7 @@ import zipfile
 import io
 import traceback
 from PIL import Image
+import asyncio  # <-- ADD THIS LINE
 
 class SmilesToImageWindow(ctk.CTkToplevel):
     # This class is unchanged from your provided version
@@ -227,6 +228,12 @@ class App(ctk.CTk):
         threading.Thread(target=self.index_data, daemon=True).start()
 
     def index_data(self):
+
+        # ---- ADD THESE TWO LINES ----
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # ---------------------------
+
         try:
             self.vector_store, self.mof_database_cache = backend.load_and_index_data(self.data_folder_path)
             if self.vector_store:

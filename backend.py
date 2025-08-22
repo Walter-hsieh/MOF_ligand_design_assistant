@@ -31,7 +31,7 @@ from PIL import Image
 # ==============================================================================
 # DEFAULT MODEL CONFIGURATION
 # ==============================================================================
-MODEL_NAME = "gemini-1.5-flash-latest"
+MODEL_NAME = "gemini-2.5-flash"
 
 # GLOBAL VARIABLES
 vector_store = None

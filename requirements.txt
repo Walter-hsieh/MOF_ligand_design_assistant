@@ -12,3 +12,4 @@ numpy<2.0
 onnxruntime==1.16.3
 pydantic
 langchain-tavily
+langchain_community # <-- ADD THIS LINE
