@@ -1,17 +1,18 @@
 import os
+import sys
 import re
 import io
 import json
 from operator import itemgetter
 import traceback
-from typing import List
+from typing import List, Optional
 
 # LangChain Imports
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader, CSVLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
@@ -21,12 +22,17 @@ from pydantic import BaseModel, Field # Using modern Pydantic v2 import
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_tavily import TavilySearch # Using modern Tavily import
 from langchain.tools.retriever import create_retriever_tool
-from langchain import hub
+# from langchain import hub  # Removed to avoid SSL issues
 
 # Chemistry Imports
 from rdkit import Chem
 from rdkit.Chem import Draw
 from PIL import Image
+
+# Disable LangSmith tracking to avoid SSL issues
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
+os.environ["LANGCHAIN_ENDPOINT"] = ""
+os.environ["LANGCHAIN_API_KEY"] = ""
 
 # ==============================================================================
 # DEFAULT MODEL CONFIGURATION
@@ -86,6 +92,32 @@ def load_documents_from_directory(directory_path: str) -> list[Document]:
                 print(f"Skipping unsupported file type: {file_path}")
     return all_docs
 
+def create_local_react_prompt():
+    """Create a local React prompt template without external dependencies."""
+    
+    template = """Answer the following questions as best you can. You have access to the following tools:
+
+{tools}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Question: {input}
+Thought:{agent_scratchpad}"""
+    
+    return PromptTemplate(
+        input_variables=["input", "agent_scratchpad", "tools", "tool_names"],
+        template=template
+    )
+
 def initialize_agent(vector_store_to_use):
     global agent_executor
     print("Initializing AI Agent with rule-based instructions...")
@@ -93,11 +125,47 @@ def initialize_agent(vector_store_to_use):
     retriever_tool = create_retriever_tool(retriever, "local_document_search", "Searches and returns relevant information from the user's private research papers and experimental data files.")
     search_tool = TavilySearch(max_results=5, description="A search engine for finding public scientific information, including chemical properties and SMILES strings.")
     tools = [retriever_tool, search_tool]
-    base_prompt = hub.pull("hwchase17/react")
+    
+    # Use local prompt template to avoid SSL issues
+    print("Using local prompt template...")
+    base_prompt = create_local_react_prompt()
+    
     instruction_template = """
-    You are an automated research assistant... (prompt from previous version)
+    You are an automated research assistant specializing in chemical discovery and MOF (Metal-Organic Framework) ligand design. Your primary goal is to help researchers modify existing ligands to enhance specific properties like CO2 capture capacity, conductivity, or other relevant characteristics.
+
+    When analyzing research papers and experimental data:
+    1. First, search through the provided documents to understand the current MOF structures and their properties
+    2. Identify the specific ligands mentioned and their current performance
+    3. Propose modifications to these ligands that could improve the target property
+    4. Provide SMILES strings for your proposed modifications
+    5. Explain the rationale behind your suggestions based on chemical principles
+
+    Always provide your final answer in the following JSON format:
+    {{
+        "candidates": [
+            {{
+                "name": "Descriptive name of the modified ligand",
+                "smiles": "SMILES string of the modified structure",
+                "rationale": "Brief explanation of why this modification should work"
+            }}
+        ]
+    }}
+
+    Be creative but scientifically sound in your suggestions. Consider factors like:
+    - Functional group modifications
+    - Chain length adjustments
+    - Substituent effects
+    - Electronic properties
+    - Steric considerations
     """
-    prompt = base_prompt.partial(instructions=instruction_template)
+    
+    # Combine the base prompt with instructions
+    combined_template = base_prompt.template + "\n\n" + instruction_template
+    prompt = PromptTemplate(
+        input_variables=["input", "agent_scratchpad", "tools", "tool_names"],
+        template=combined_template
+    )
+    
     llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0.7)
     agent = create_react_agent(llm, tools, prompt)
     agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True, max_iterations=15)
